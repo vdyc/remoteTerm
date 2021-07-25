@@ -36,7 +36,22 @@ class Alias(Transform):
     alias_dict = dict(config.items("ALIAS"))
 
     def tx(self, text):
-        text = self.alias_dict[text] if text in self.alias_dict.keys() else text
+        text = text.replace("\r\n", "\n")
+        if text.endswith("\n"):
+            backspace_position = 0
+            if text.startswith("kieny_"):
+                # For key input, letters come in separately
+                text = text[len("kieny_"):]
+                text_strip = text[:-1]
+                backspace_position = len(text_strip)
+                if backspace_position and text_strip in self.alias_dict.keys():
+                    text = '\x08' * backspace_position + self.alias_dict[text_strip] + "\n"
+                else:
+                    text = "\n"
+            else:
+                # For socket input, command always come in whole
+                text_strip = text[:-1]
+                text = self.alias_dict[text_strip] + "\n" if text_strip in self.alias_dict.keys() else text
         return text
 
 
@@ -53,14 +68,21 @@ TRANSFORMATIONS = {
 
 class RemoteTerm(Miniterm):
     def __init__(self, serial_instance):
-        super().__init__(serial_instance, echo=False, eol='crlf')
-        self.filters = ["colorize"]
+        # super().__init__(serial_instance, echo=False, eol='crlf', filters=["colorize"])
+        super().__init__(serial_instance, echo=False, eol='crlf', filters=["colorize", "alias"])
         self.tx_q = Queue()
+
+    def update_transformations(self):
+        """take list of transformation classes and instantiate them for rx and tx"""
+        transformations = [EOL_TRANSFORMATIONS[self.eol]] + [TRANSFORMATIONS[f]
+                                                             for f in self.filters]
+        self.tx_transformations = [t() for t in transformations]
+        self.rx_transformations = list(reversed(self.tx_transformations))
 
     def socket_input(self):
         context = zmq.Context()
         socket = context.socket(zmq.REP)
-        socket.bind(config.get("DEFAULT", "socket"))
+        socket.bind(config.get("SOCKET", "socket_port"))
 
         while True:
             #  Wait for next request from client
@@ -70,10 +92,16 @@ class RemoteTerm(Miniterm):
             socket.send(b"In queue")
 
     def keyboard_input(self):
+        command_in = "kieny_"
         while self.alive:
             try:
-                command_in = self.console.getkey()
-                self.tx_q.put(command_in)
+                key_in = self.console.getkey()
+                command_in += key_in
+                if key_in in "\n":
+                    self.tx_q.put(command_in)
+                    command_in = "kieny_"
+                else:
+                    self.tx_q.put(key_in)
             except KeyboardInterrupt:
                 self.tx_q.put('\x03')
 

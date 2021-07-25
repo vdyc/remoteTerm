@@ -9,7 +9,7 @@ socket.connect("tcp://localhost:9779")
 
 out_command = ""
 while out_command.lower() != "exit":
-    out_command = input("Command to serial port:")
+    out_command = input("Command to serial port: ")
     socket.send_string(out_command)
 
     #  Get the reply.
