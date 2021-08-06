@@ -19,6 +19,7 @@ import re
 import sys
 import configparser
 import signal
+import atexit
 import argparse
 from datetime import datetime
 from queue import Queue
@@ -34,7 +35,20 @@ config.read(config_file)
 
 class Alias(Transform):
     """Use alias for serial console commands"""
-    alias_dict = dict(config.items("ALIAS"))
+    def __init__(self):
+        self.alias_dict = dict(config.items("ALIAS"))
+        atexit.register(self.cleanup)
+        f_out = os.path.join(os.path.dirname(sys.argv[0]), "log")
+        if not os.path.exists(f_out):
+            os.makedirs(f_out)
+        self.log_file = open(os.path.join(f_out, datetime.now().strftime("%Y%m%d_%H%M%S.log")), "w+")
+
+    def cleanup(self):
+        self.log_file.close()
+
+    def rx(self, text):
+        self.log_file.write(text)
+        return text
 
     def tx(self, text):
         text = text.replace("\r\n", "\n")
@@ -53,6 +67,7 @@ class Alias(Transform):
                 # For socket input, command always come in whole
                 text_strip = text[:-1]
                 text = self.alias_dict[text_strip] + "\n" if text_strip in self.alias_dict.keys() else text
+        self.log_file.write(text)
         return text
 
 
