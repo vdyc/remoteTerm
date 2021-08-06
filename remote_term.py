@@ -18,6 +18,7 @@ import time
 import re
 import sys
 import configparser
+import signal
 import argparse
 from datetime import datetime
 from queue import Queue
@@ -38,10 +39,10 @@ class Alias(Transform):
     def tx(self, text):
         text = text.replace("\r\n", "\n")
         if text.endswith("\n"):
-            backspace_position = 0
             if text.startswith("kieny_"):
-                # For key input, letters come in separately
+                # For key input, letters come in separately, when "enter" pressed, need to reassemble the command
                 text = text[len("kieny_"):]
+                # print(f"text: {text.encode('ascii')}")
                 text_strip = text[:-1]
                 backspace_position = len(text_strip)
                 if backspace_position and text_strip in self.alias_dict.keys():
@@ -55,6 +56,72 @@ class Alias(Transform):
         return text
 
 
+class TeraTermCommandLine(Transform):
+    """Support a few frequently used ttl command"""
+    regex_awaiting = ""
+    cur_line = ""
+    regex_match = False
+
+    def rx(self, text):
+        self.cur_line += text
+        new_line_started = True
+        if "\n" in self.cur_line:
+            if self.cur_line.endswith("\n"):
+                new_line_started = False
+            lines = self.cur_line.split("\n")
+            # in case rx is multiline
+            self.cur_line = lines[-1] if new_line_started else ""
+            if self.regex_awaiting != "":
+                for line in lines:
+                    _find = re.findall(self.regex_awaiting, line)
+                    if len(_find):
+                        self.regex_match = True
+                        self.regex_awaiting = ""
+        return text
+
+    def tx(self, text):
+        def ttl_send_command(arg):
+            _command = arg
+            try:
+                _command = arg.strip()[1:-1]
+            except:
+                print(f"Unable to parse command: {arg}")
+            return _command
+
+        def ttl_pause(arg):
+            # Sleep here doesn't guarantee the gap between commands, better idea?
+            time.sleep(int(arg))
+            return ""
+
+        def ttl_wait_regex(arg):
+            try:
+                _regex = arg.strip()[1:-1]
+                self.regex_awaiting = _regex
+                _start = datetime.utcnow()
+                while not self.regex_match:
+                    time.sleep(0.1)
+                    if (datetime.utcnow() - _start).total_seconds() > int(config.get("TERATERM_TTL", "regex_timeout_sec")):
+                        break
+                self.regex_match = False
+                self.regex_awaiting = ""
+            except:
+                print(f"Unable to parse command: {arg}")
+            finally:
+                return ""
+
+        TTL = {"sendln ": ttl_send_command,
+               "pause ": ttl_pause,
+               "waitregex": ttl_wait_regex
+               }
+
+        _transformed = text
+        for key in TTL.keys():
+            if text.startswith(key):
+                print(f"{key}: {text}")
+                _transformed = TTL[key](text[len(key):])
+        return _transformed
+
+
 TRANSFORMATIONS = {
     'direct': Transform,    # no transformation
     'default': NoTerminal,
@@ -63,19 +130,18 @@ TRANSFORMATIONS = {
     'colorize': Colorize,
     'debug': DebugIO,
     'alias': Alias,
+    'ttl': TeraTermCommandLine,
 }
 
 
 class RemoteTerm(Miniterm):
     def __init__(self, serial_instance):
-        # super().__init__(serial_instance, echo=False, eol='crlf', filters=["colorize"])
-        super().__init__(serial_instance, echo=False, eol='crlf', filters=["colorize", "alias"])
+        super().__init__(serial_instance, echo=False, eol='crlf', filters=config.get("MISC", "filter").split(";"))
         self.tx_q = Queue()
 
     def update_transformations(self):
         """take list of transformation classes and instantiate them for rx and tx"""
-        transformations = [EOL_TRANSFORMATIONS[self.eol]] + [TRANSFORMATIONS[f]
-                                                             for f in self.filters]
+        transformations = [EOL_TRANSFORMATIONS[self.eol]] + [TRANSFORMATIONS[f] for f in self.filters]
         self.tx_transformations = [t() for t in transformations]
         self.rx_transformations = list(reversed(self.tx_transformations))
 
@@ -93,11 +159,24 @@ class RemoteTerm(Miniterm):
 
     def keyboard_input(self):
         command_in = "kieny_"
+        menu_active = False
+
         while self.alive:
             try:
                 key_in = self.console.getkey()
+                # print(f"key_in: {key_in} / {key_in.encode('ascii')}")
                 command_in += key_in
-                if key_in in "\n":
+                if menu_active:
+                    self.handle_menu_key(key_in)
+                    menu_active = False
+                elif key_in == self.menu_character:
+                    menu_active = True  # next char will be for menu
+                elif key_in == self.exit_character:
+                    # exit app
+                    print("RemoteTerminal exit")
+                    os.kill(os.getpid(), signal.SIGTERM)
+                    break
+                elif key_in in "\r\n":
                     self.tx_q.put(command_in)
                     command_in = "kieny_"
                 else:
@@ -105,34 +184,10 @@ class RemoteTerm(Miniterm):
             except KeyboardInterrupt:
                 self.tx_q.put('\x03')
 
-    def serial_communication(self):
+    def reader(self):
         """loop and copy serial->console"""
         try:
-            menu_active = False
             while self.alive:
-                # Serial TX
-                if not self.tx_q.empty():
-                    c = self.tx_q.get()
-                    if menu_active:
-                        self.handle_menu_key(c)
-                        menu_active = False
-                    elif c == self.menu_character:
-                        menu_active = True  # next char will be for menu
-                    elif c == self.exit_character:
-                        self.stop()  # exit app
-                        break
-                    else:
-                        # ~ if self.raw:
-                        text = c
-                        for transformation in self.tx_transformations:
-                            text = transformation.tx(text)
-                        self.serial.write(self.tx_encoder.encode(text))
-                        if self.echo:
-                            echo_text = c
-                            for transformation in self.tx_transformations:
-                                echo_text = transformation.echo(echo_text)
-                            self.console.write(echo_text)
-
                 # Serial RX
                 if self._reader_alive:
                     # read all that is there or wait for one byte
@@ -151,11 +206,30 @@ class RemoteTerm(Miniterm):
             self.console.cancel()
             raise       # XXX handle instead of re-raise?
 
+    def writer(self):
+        try:
+            while self.alive:
+                # Serial TX
+                if not self.tx_q.empty():
+                    c = self.tx_q.get()
+                    text = c
+                    for transformation in self.tx_transformations:
+                        text = transformation.tx(text)
+                    self.serial.write(self.tx_encoder.encode(text))
+                    if self.echo:
+                        echo_text = c
+                        for transformation in self.tx_transformations:
+                            echo_text = transformation.echo(echo_text)
+                        self.console.write(echo_text)
+        except:
+            self.alive = False
+            raise
+
     def _start_reader(self):
         """Start serial r/w thread"""
         self._reader_alive = True
         # start serial r/w thread
-        self.receiver_thread = threading.Thread(target=self.serial_communication, name='serial_comm')
+        self.receiver_thread = threading.Thread(target=self.reader, name='serial_comm')
         self.receiver_thread.daemon = True
         self.receiver_thread.start()
 
@@ -166,28 +240,24 @@ class RemoteTerm(Miniterm):
         self.socket_thread = threading.Thread(target=self.socket_input, name='socket')
         self.socket_thread.daemon = True
         self.socket_thread.start()
-        self.transmitter_thread = threading.Thread(target=self.keyboard_input, name='tx')
+        self.keyboard_thread = threading.Thread(target=self.keyboard_input, name='keyboard')
+        self.keyboard_thread.daemon = True
+        self.keyboard_thread.start()
+        self._start_reader()
+        self.transmitter_thread = threading.Thread(target=self.writer, name='tx')
         self.transmitter_thread.daemon = True
         self.transmitter_thread.start()
-        self._start_reader()
         self.console.setup()
 
     def join(self, transmit_only=False):
         """wait for worker threads to terminate"""
-        self.transmitter_thread.join()
+        self.keyboard_thread.join()
         self.socket_thread.join()
+        self.transmitter_thread.join()
         if not transmit_only:
             if hasattr(self.serial, 'cancel_read'):
                 self.serial.cancel_read()
             self.receiver_thread.join()
-
-    def writer(self):
-        """\
-        Loop and copy console->serial until self.exit_character character is
-        found. When self.menu_character is found, interpret the next key
-        locally.
-        """
-        print("Error, feature moved to serial_communication")
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
