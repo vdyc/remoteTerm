@@ -210,6 +210,7 @@ class RemoteTerm(Miniterm):
         try:
             while self.alive:
                 # Serial TX
+                time.sleep(0.05)
                 if not self.tx_q.empty():
                     c = self.tx_q.get()
                     text = c
