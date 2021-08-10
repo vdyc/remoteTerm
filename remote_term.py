@@ -48,6 +48,8 @@ class Alias(Transform):
 
     def rx(self, text):
         self.log_file.write(text)
+        if "\n" in text:
+            self.log_file.flush()
         return text
 
     def tx(self, text):
@@ -153,6 +155,7 @@ class RemoteTerm(Miniterm):
     def __init__(self, serial_instance):
         super().__init__(serial_instance, echo=False, eol='crlf', filters=config.get("MISC", "filter").split(";"))
         self.tx_q = Queue()
+        self.socket = None
 
     def update_transformations(self):
         """take list of transformation classes and instantiate them for rx and tx"""
@@ -162,15 +165,15 @@ class RemoteTerm(Miniterm):
 
     def socket_input(self):
         context = zmq.Context()
-        socket = context.socket(zmq.REP)
-        socket.bind(config.get("SOCKET", "socket_port"))
+        self.socket = context.socket(zmq.REP)
+        self.socket.bind(config.get("SOCKET", "socket_port"))
 
         while True:
             #  Wait for next request from client
-            command_in = socket.recv()
+            command_in = self.socket.recv()
             self.tx_q.put(command_in.decode('ascii') + "\n")
             #  Send reply back to client
-            socket.send(b"In queue")
+            self.socket.send(b"In queue")
 
     def keyboard_input(self):
         command_in = "kieny_"
@@ -213,7 +216,12 @@ class RemoteTerm(Miniterm):
                         else:
                             text = self.rx_decoder.decode(data)
                             for transformation in self.rx_transformations:
-                                text = transformation.rx(text)
+                                try:
+                                    text = transformation.rx(text)
+                                except Exception as e:
+                                    print(f"Unable to handle string: {text} \n{e}")
+                                    test = ""
+                                    pass
                             self.console.write(text)
         except serial.SerialException:
             print(f"{serial.SerialException}")
