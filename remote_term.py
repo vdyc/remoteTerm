@@ -11,24 +11,20 @@
 # SPDX-License-Identifier:    BSD-3-Clause
 
 import serial
-# import os
-# import subprocess
 import time
-# import shutil
 import re
-import sys
 import configparser
 import signal
 import atexit
 import argparse
 from datetime import datetime
 from queue import Queue
-from threading import Thread
-from serial.tools.list_ports import comports
 from serial.tools.miniterm import *
 import zmq
 
-config_file = r".\serial.cfg"
+VERSION = 0.2
+
+config_file = os.path.join(os.path.dirname(sys.argv[0]), "serial.cfg")
 config = configparser.ConfigParser()
 config.read(config_file)
 
@@ -44,13 +40,16 @@ class Alias(Transform):
         self.log_file = open(os.path.join(f_out, datetime.now().strftime("%Y%m%d_%H%M%S.log")), "w+")
 
     def cleanup(self):
+        print("Updating log file")
         self.log_file.close()
 
     def rx(self, text):
-        self.log_file.write(text)
-        if "\n" in text:
-            self.log_file.flush()
+        self.log_file.write(self.strip_special_char(text.replace("\r\n", "\n")))
         return text
+
+    @staticmethod
+    def strip_special_char(text):
+        return text.replace("\x07", " ").replace("\x08", " ").replace("\x09", " ").replace("\x18", "").replace("\x1B", "").replace("\x7F", " ")
 
     def tx(self, text):
         text = text.replace("\r\n", "\n")
@@ -69,7 +68,6 @@ class Alias(Transform):
                 # For socket input, command always come in whole
                 text_strip = text[:-1]
                 text = self.alias_dict[text_strip] + "\n" if text_strip in self.alias_dict.keys() else text
-        self.log_file.write(text)
         return text
 
 
@@ -175,6 +173,19 @@ class RemoteTerm(Miniterm):
             #  Send reply back to client
             self.socket.send(b"In queue")
 
+    def close(self):
+        self.alive = False
+        self.transformation_close()
+        time.sleep(1)
+        self.serial.close()
+
+    def transformation_close(self):
+        for transformation in self.tx_transformations:
+            try:
+                transformation.cleanup()
+            except:
+                pass
+
     def keyboard_input(self):
         command_in = "kieny_"
         menu_active = False
@@ -191,7 +202,8 @@ class RemoteTerm(Miniterm):
                     menu_active = True  # next char will be for menu
                 elif key_in == self.exit_character:
                     # exit app
-                    print("RemoteTerminal exit")
+                    print("\nRemoteTerminal exit")
+                    self.close()
                     os.kill(os.getpid(), signal.SIGTERM)
                     break
                 elif key_in in "\r\n":
@@ -239,7 +251,13 @@ class RemoteTerm(Miniterm):
                     text = c
                     for transformation in self.tx_transformations:
                         text = transformation.tx(text)
-                    self.serial.write(self.tx_encoder.encode(text))
+
+                    if len(text) > 2 and ";" in text:
+                        for cmd in text.split(";"):
+                            self.serial.write(self.tx_encoder.encode(cmd + "\n"))
+                            time.sleep(float(config.get("MISC", "alias_latency_between_comma")))
+                    else:
+                        self.serial.write(self.tx_encoder.encode(text))
                     if self.echo:
                         echo_text = c
                         for transformation in self.tx_transformations:
@@ -511,4 +529,5 @@ def main(default_port=None, default_baudrate=115200, default_rts=None, default_d
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 if __name__ == '__main__':
+    print(f"\nWelcome to RemoteTerm ver{VERSION}")
     main()
