@@ -311,6 +311,11 @@ def main(default_port=None, default_baudrate=115200, default_rts=None, default_d
     parser = argparse.ArgumentParser(
         description='RemoteTerm - A simple terminal program for the serial port.')
 
+    if default_port is None:
+        # check serial.cfg
+        _c = config.get("SERIAL", "default_port")
+        default_port = _c if "COM" in _c else None
+
     parser.add_argument(
         'port',
         nargs='?',

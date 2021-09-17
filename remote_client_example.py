@@ -14,4 +14,4 @@ while out_command.lower() != "exit":
 
     #  Get the reply.
     message = socket.recv()
-    print("Received response for: %s [ %s ]" % (out_command, message.decode('ascii')))
+    print("Received response for: %s [ %s ]" % (out_command.encode('ascii'), message.decode('ascii')))
