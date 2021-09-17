@@ -217,24 +217,22 @@ class RemoteTerm(Miniterm):
     def reader(self):
         """loop and copy serial->console"""
         try:
-            while self.alive:
-                # Serial RX
-                if self._reader_alive:
-                    # read all that is there or wait for one byte
-                    data = self.serial.read(self.serial.in_waiting or 1)
-                    if data:
-                        if self.raw:
-                            self.console.write_bytes(data)
-                        else:
-                            text = self.rx_decoder.decode(data)
-                            for transformation in self.rx_transformations:
-                                try:
-                                    text = transformation.rx(text)
-                                except Exception as e:
-                                    print(f"Unable to handle string: {text} \n{e}")
-                                    test = ""
-                                    pass
-                            self.console.write(text)
+            while self.alive and self._reader_alive:
+                # read all that is there or wait for one byte
+                data = self.serial.read(self.serial.in_waiting or 1)
+                if data:
+                    if self.raw:
+                        self.console.write_bytes(data)
+                    else:
+                        text = self.rx_decoder.decode(data)
+                        for transformation in self.rx_transformations:
+                            try:
+                                text = transformation.rx(text)
+                            except Exception as e:
+                                print(f"Unable to handle string: {text} \n{e}")
+                                test = ""
+                                pass
+                        self.console.write(text)
         except serial.SerialException:
             print(f"{serial.SerialException}")
             self.alive = False
