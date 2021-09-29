@@ -37,14 +37,15 @@ class Alias(Transform):
         f_out = os.path.join(os.path.dirname(sys.argv[0]), "log")
         if not os.path.exists(f_out):
             os.makedirs(f_out)
-        self.log_file = open(os.path.join(f_out, datetime.now().strftime("%Y%m%d_%H%M%S.log")), "w+")
+        self.log_file = open(os.path.join(f_out, datetime.now().strftime("RT_%Y%m%d_%H%M%S.log")), "w+")
 
     def cleanup(self):
         print("Updating log file")
         self.log_file.close()
 
     def rx(self, text):
-        self.log_file.write(self.strip_special_char(text.replace("\r\n", "\n")))
+        cur_time = datetime.now().strftime("%H:%M:%S")
+        self.log_file.write(self.strip_special_char(text.replace("\r\n", f"\n{cur_time}: ")))
         return text
 
     @staticmethod
